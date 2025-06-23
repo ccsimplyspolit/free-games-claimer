@@ -21,7 +21,7 @@ const db = await jsonDb('unrealengine.json', {});
 const context = await firefox.launchPersistentContext(cfg.dir.browser, {
   headless: cfg.headless,
   viewport: { width: cfg.width, height: cfg.height },
-  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.83 Safari/537.36', // see replace of Headless in util.newStealthContext. TODO Windows UA enough to avoid 'device not supported'? update if browser is updated?
+  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0', // see replace of Headless in util.newStealthContext. TODO Windows UA enough to avoid 'device not supported'? update if browser is updated?
   // userAgent for firefox: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:106.0) Gecko/20100101 Firefox/106.0
   locale: 'en-US', // ignore OS locale to be sure to have english text for locators
   recordVideo: cfg.record ? { dir: 'data/record/', size: { width: cfg.width, height: cfg.height } } : undefined, // will record a .webm video for each page navigated; without size, video would be scaled down to fit 800x800
@@ -38,6 +38,13 @@ if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
 const page = context.pages().length ? context.pages()[0] : await context.newPage(); // should always exist
 await page.setViewportSize({ width: cfg.width, height: cfg.height }); // TODO workaround for https://github.com/vogler/free-games-claimer/issues/277 until Playwright fixes it
 // console.debug('userAgent:', await page.evaluate(() => navigator.userAgent));
+
+  // Try to set hCaptcha accessibility cookie
+  try {
+    await page.goto('https://www.hcaptcha.com/accessibility', { waitUntil: 'domcontentloaded' });
+  } catch (e) {
+    console.warn('Failed to navigate to hCaptcha accessibility page. This might result in more captcha challenges.');
+  }
 
 const notify_games = [];
 let user;
@@ -162,28 +169,40 @@ try {
     // I Agree button is only shown for EU accounts! https://github.com/vogler/free-games-claimer/pull/7#issuecomment-1038964872
     const btnAgree = iframe.locator('button:has-text("I Agree")');
     btnAgree.waitFor().then(() => btnAgree.click()).catch(_ => { }); // EU: wait for and click 'I Agree'
-    try {
-      // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
-      const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
-      captcha.waitFor().then(async () => { // don't await, since element may not be shown
-        // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
-        console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
-      }).catch(_ => { }); // may time out if not shown
-      await page.waitForSelector('text=Thank you');
-      for (const id of ids) {
-        db.data[user][id].status = 'claimed';
-        db.data[user][id].time = datetime(); // claimed time overwrites failed/dryrun time
+
+    const maxRetries = 3;
+    let retries = 0;
+    let claimed = false;
+    while (retries < maxRetries && !claimed) {
+      try {
+        // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
+        const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
+        captcha.waitFor().then(async () => { // don't await, since element may not be shown
+          // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
+          console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
+        }).catch(_ => { }); // may time out if not shown
+        await page.waitForSelector('text=Thank you');
+        for (const id of ids) {
+          db.data[user][id].status = 'claimed';
+          db.data[user][id].time = datetime(); // claimed time overwrites failed/dryrun time
+        }
+        notify_games.forEach(g => g.status == 'failed' && (g.status = 'claimed'));
+        console.log('Claimed successfully!');
+        claimed = true;
+        // context.setDefaultTimeout(cfg.timeout);
+      } catch (e) {
+        retries++;
+        console.log(e);
+        // console.error('  Failed to claim! Try again if NopeCHA timed out. Click the extension to see if you ran out of credits (refill after 24h). To avoid captchas try to get a new IP or set a cookie from https://www.hcaptcha.com/accessibility');
+        console.error(`  Failed to claim! Retry ${retries}/${maxRetries}. To avoid captchas try to get a new IP address.`);
+        if (retries < maxRetries) {
+          await page.waitForTimeout(5000 * retries); // Wait longer after each retry
+        } else {
+          await page.screenshot({ path: screenshot('failed', `${filenamify(datetime())}.png`), fullPage: true });
+          // db.data[user][id].status = 'failed'; // This would only mark the last item as failed
+          notify_games.forEach(g => { if (ids.includes(g.url.split('/').pop())) g.status = 'failed'; }); // Mark all items in this batch as failed
+        }
       }
-      notify_games.forEach(g => g.status == 'failed' && (g.status = 'claimed'));
-      console.log('Claimed successfully!');
-      // context.setDefaultTimeout(cfg.timeout);
-    } catch (e) {
-      console.log(e);
-      // console.error('  Failed to claim! Try again if NopeCHA timed out. Click the extension to see if you ran out of credits (refill after 24h). To avoid captchas try to get a new IP or set a cookie from https://www.hcaptcha.com/accessibility');
-      console.error('  Failed to claim! To avoid captchas try to get a new IP address.');
-      await page.screenshot({ path: screenshot('failed', `${filenamify(datetime())}.png`), fullPage: true });
-      // db.data[user][id].status = 'failed';
-      notify_games.forEach(g => g.status = 'failed');
     }
     // notify_game.status = db.data[user][game_id].status; // claimed or failed
 

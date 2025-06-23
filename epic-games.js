@@ -55,6 +55,13 @@ await page.setViewportSize({ width: cfg.width, height: cfg.height }); // TODO wo
 // some debug info about the page (screen dimensions, user agent, platform)
 // eslint-disable-next-line no-undef
 if (cfg.debug) console.debug(await page.evaluate(() => [(({ width, height, availWidth, availHeight }) => ({ width, height, availWidth, availHeight }))(window.screen), navigator.userAgent, navigator.platform, navigator.vendor])); // deconstruct screen needed since `window.screen` prints {}, `window.screen.toString()` '[object Screen]', and can't use some pick function without defining it on `page`
+
+  // Try to set hCaptcha accessibility cookie
+  try {
+    await page.goto('https://www.hcaptcha.com/accessibility', { waitUntil: 'domcontentloaded' });
+  } catch (e) {
+    console.warn('Failed to navigate to hCaptcha accessibility page. This might result in more captcha challenges.');
+  }
 if (cfg.debug_network) {
   // const filter = _ => true;
   const filter = r => r.url().includes('store.epicgames.com');
@@ -268,37 +275,48 @@ try {
       // I Agree button is only shown for EU accounts! https://github.com/vogler/free-games-claimer/pull/7#issuecomment-1038964872
       const btnAgree = iframe.locator('button:has-text("I Accept")');
       btnAgree.waitFor().then(() => btnAgree.click()).catch(_ => { }); // EU: wait for and click 'I Agree'
-      try {
-        // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
-        const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
-        captcha.waitFor().then(async () => { // don't await, since element may not be shown
-          // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
-          console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
-          // await notify(`epic-games: got captcha challenge right before claim of <a href="${url}">${title}</a>. Use VNC to solve it manually.`); // TODO not all apprise services understand HTML: https://github.com/vogler/free-games-claimer/pull/417
-          await notify(`epic-games: got captcha challenge for.\nGame link: ${url}`);
-          // TODO could even create purchase URL, see https://github.com/vogler/free-games-claimer/pull/130
-          // await page.waitForTimeout(2000);
-          // const p = path.resolve(cfg.dir.screenshots, 'epic-games', 'captcha', `${filenamify(datetime())}.png`);
-          // await captcha.screenshot({ path: p });
-          // console.info('  Saved a screenshot of hcaptcha challenge to', p);
-          // console.error('  Got hcaptcha challenge. To avoid it, get a link from https://www.hcaptcha.com/accessibility'); // TODO save this link in config and visit it daily to set accessibility cookie to avoid captcha challenge?
-        }).catch(_ => { }); // may time out if not shown
-        iframe.locator('.payment__errors:has-text("Failed to challenge captcha, please try again later.")').waitFor().then(async () => {
-          console.error('  Failed to challenge captcha, please try again later.');
-          await notify('epic-games: failed to challenge captcha. Please check.');
-        }).catch(_ => { });
-        await page.locator('text=Thanks for your order!').waitFor({ state: 'attached' }); // TODO Bundle: got stuck here, but normal game now as well
-        db.data[user][game_id].status = 'claimed';
-        db.data[user][game_id].time = datetime(); // claimed time overwrites failed/dryrun time
-        console.log('  Claimed successfully!');
-        // context.setDefaultTimeout(cfg.timeout);
-      } catch (e) {
-        console.log(e);
-        // console.error('  Failed to claim! Try again if NopeCHA timed out. Click the extension to see if you ran out of credits (refill after 24h). To avoid captchas try to get a new IP or set a cookie from https://www.hcaptcha.com/accessibility');
-        console.error('  Failed to claim! To avoid captchas try to get a new IP address.');
-        const p = screenshot('failed', `${game_id}_${filenamify(datetime())}.png`);
-        await page.screenshot({ path: p, fullPage: true });
-        db.data[user][game_id].status = 'failed';
+      const maxRetries = 3;
+      let retries = 0;
+      let claimed = false;
+      while (retries < maxRetries && !claimed) {
+        try {
+          // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
+          const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
+          captcha.waitFor().then(async () => { // don't await, since element may not be shown
+            // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
+            console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
+            // await notify(`epic-games: got captcha challenge right before claim of <a href="${url}">${title}</a>. Use VNC to solve it manually.`); // TODO not all apprise services understand HTML: https://github.com/vogler/free-games-claimer/pull/417
+            await notify(`epic-games: got captcha challenge for.\nGame link: ${url}`);
+            // TODO could even create purchase URL, see https://github.com/vogler/free-games-claimer/pull/130
+            // await page.waitForTimeout(2000);
+            // const p = path.resolve(cfg.dir.screenshots, 'epic-games', 'captcha', `${filenamify(datetime())}.png`);
+            // await captcha.screenshot({ path: p });
+            // console.info('  Saved a screenshot of hcaptcha challenge to', p);
+            // console.error('  Got hcaptcha challenge. To avoid it, get a link from https://www.hcaptcha.com/accessibility'); // TODO save this link in config and visit it daily to set accessibility cookie to avoid captcha challenge?
+          }).catch(_ => { }); // may time out if not shown
+          iframe.locator('.payment__errors:has-text("Failed to challenge captcha, please try again later.")').waitFor().then(async () => {
+            console.error('  Failed to challenge captcha, please try again later.');
+            await notify('epic-games: failed to challenge captcha. Please check.');
+          }).catch(_ => { });
+          await page.locator('text=Thanks for your order!').waitFor({ state: 'attached' }); // TODO Bundle: got stuck here, but normal game now as well
+          db.data[user][game_id].status = 'claimed';
+          db.data[user][game_id].time = datetime(); // claimed time overwrites failed/dryrun time
+          console.log('  Claimed successfully!');
+          claimed = true;
+          // context.setDefaultTimeout(cfg.timeout);
+        } catch (e) {
+          retries++;
+          console.log(e);
+          // console.error('  Failed to claim! Try again if NopeCHA timed out. Click the extension to see if you ran out of credits (refill after 24h). To avoid captchas try to get a new IP or set a cookie from https://www.hcaptcha.com/accessibility');
+          console.error(`  Failed to claim! Retry ${retries}/${maxRetries}. To avoid captchas try to get a new IP address.`);
+          if (retries < maxRetries) {
+            await page.waitForTimeout(5000 * retries); // Wait longer after each retry
+          } else {
+            const p = screenshot('failed', `${game_id}_${filenamify(datetime())}.png`);
+            await page.screenshot({ path: p, fullPage: true });
+            db.data[user][game_id].status = 'failed';
+          }
+        }
       }
       notify_game.status = db.data[user][game_id].status; // claimed or failed
 
