@@ -106,10 +106,21 @@ try {
     if (!email) await notifyBrowserLogin();
     else {
       // await page.click('text=Sign in with Epic Games');
-      page.waitForSelector('.h_captcha_challenge iframe').then(async () => {
-        console.error('Got a captcha during login (likely due to too many attempts)! You may solve it in the browser, get a new IP or try again in a few hours.');
-        await notify('epic-games: got captcha during login. Please check.');
-      }).catch(_ => { });
+      page.waitForSelector('.h_captcha_challenge iframe', { timeout: 5000 }).then(async (iframeHandle) => {
+        if (iframeHandle) {
+          console.error('Got a captcha during login (likely due to too many attempts)! You may solve it in the browser, get a new IP or try again in a few hours.');
+          await notify('epic-games: got captcha during login. Please check.');
+          // Try to click the captcha checkbox
+          try {
+            const iframe = await iframeHandle.contentFrame();
+            if (iframe) {
+              await iframe.locator('#checkbox').click({ timeout: 5000 });
+            }
+          } catch (e) {
+            console.warn('Failed to click captcha checkbox during login:', e.message);
+          }
+        }
+      }).catch(_ => { /* Captcha not found or timed out, proceed normally */ });
       page.waitForSelector('p:has-text("Incorrect response.")').then(async () => {
         console.error('Incorrect response for captcha!');
       }).catch(_ => { });
@@ -282,18 +293,29 @@ try {
         try {
           // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
           const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
-          captcha.waitFor().then(async () => { // don't await, since element may not be shown
-            // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
-            console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
-            // await notify(`epic-games: got captcha challenge right before claim of <a href="${url}">${title}</a>. Use VNC to solve it manually.`); // TODO not all apprise services understand HTML: https://github.com/vogler/free-games-claimer/pull/417
-            await notify(`epic-games: got captcha challenge for.\nGame link: ${url}`);
-            // TODO could even create purchase URL, see https://github.com/vogler/free-games-claimer/pull/130
-            // await page.waitForTimeout(2000);
-            // const p = path.resolve(cfg.dir.screenshots, 'epic-games', 'captcha', `${filenamify(datetime())}.png`);
-            // await captcha.screenshot({ path: p });
-            // console.info('  Saved a screenshot of hcaptcha challenge to', p);
-            // console.error('  Got hcaptcha challenge. To avoid it, get a link from https://www.hcaptcha.com/accessibility'); // TODO save this link in config and visit it daily to set accessibility cookie to avoid captcha challenge?
-          }).catch(_ => { }); // may time out if not shown
+          captcha.waitFor({ timeout: 5000 }).then(async (iframeHandle) => { // don't await, since element may not be shown
+            if (iframeHandle) {
+              // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
+              console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
+              // await notify(`epic-games: got captcha challenge right before claim of <a href="${url}">${title}</a>. Use VNC to solve it manually.`); // TODO not all apprise services understand HTML: https://github.com/vogler/free-games-claimer/pull/417
+              await notify(`epic-games: got captcha challenge for.\nGame link: ${url}`);
+              // TODO could even create purchase URL, see https://github.com/vogler/free-games-claimer/pull/130
+              // await page.waitForTimeout(2000);
+              // const p = path.resolve(cfg.dir.screenshots, 'epic-games', 'captcha', `${filenamify(datetime())}.png`);
+              // await captcha.screenshot({ path: p });
+              // console.info('  Saved a screenshot of hcaptcha challenge to', p);
+              // console.error('  Got hcaptcha challenge. To avoid it, get a link from https://www.hcaptcha.com/accessibility'); // TODO save this link in config and visit it daily to set accessibility cookie to avoid captcha challenge?
+              // Try to click the captcha checkbox
+              try {
+                const captchaFrame = await iframeHandle.contentFrame();
+                if (captchaFrame) {
+                  await captchaFrame.locator('#checkbox').click({ timeout: 5000 });
+                }
+              } catch (e) {
+                console.warn('Failed to click captcha checkbox during claim:', e.message);
+              }
+            }
+          }).catch(_ => { /* Captcha not found or timed out, proceed normally */ });
           iframe.locator('.payment__errors:has-text("Failed to challenge captcha, please try again later.")').waitFor().then(async () => {
             console.error('  Failed to challenge captcha, please try again later.');
             await notify('epic-games: failed to challenge captcha. Please check.');

@@ -72,10 +72,21 @@ try {
       await page.click('button[type="submit"]');
       await page.fill('#password', password);
       await page.click('button[type="submit"]');
-      page.waitForSelector('#h_captcha_challenge_login_prod iframe').then(() => {
-        console.error('Got a captcha during login (likely due to too many attempts)! You may solve it in the browser, get a new IP or try again in a few hours.');
-        notify('unrealengine: got captcha during login. Please check.');
-      }).catch(_ => { });
+      page.waitForSelector('#h_captcha_challenge_login_prod iframe', { timeout: 5000 }).then(async (iframeHandle) => {
+        if (iframeHandle) {
+          console.error('Got a captcha during login (likely due to too many attempts)! You may solve it in the browser, get a new IP or try again in a few hours.');
+          notify('unrealengine: got captcha during login. Please check.');
+          // Try to click the captcha checkbox
+          try {
+            const iframe = await iframeHandle.contentFrame();
+            if (iframe) {
+              await iframe.locator('#checkbox').click({ timeout: 5000 });
+            }
+          } catch (e) {
+            console.warn('Failed to click captcha checkbox during login:', e.message);
+          }
+        }
+      }).catch(_ => { /* Captcha not found or timed out, proceed normally */ });
       // handle MFA, but don't await it
       page.waitForURL('**/id/login/mfa**').then(async () => {
         console.log('Enter the security code to continue - This appears to be a new device, browser or location. A security code has been sent to your email address at ...');
@@ -177,10 +188,21 @@ try {
       try {
         // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
         const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
-        captcha.waitFor().then(async () => { // don't await, since element may not be shown
-          // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
-          console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
-        }).catch(_ => { }); // may time out if not shown
+        captcha.waitFor({ timeout: 5000 }).then(async (iframeHandle) => { // don't await, since element may not be shown
+          if (iframeHandle) {
+            // console.info('  Got hcaptcha challenge! NopeCHA extension will likely solve it.')
+            console.error('  Got hcaptcha challenge! Lost trust due to too many login attempts? You can solve the captcha in the browser or get a new IP address.');
+            // Try to click the captcha checkbox
+            try {
+              const captchaFrame = await iframeHandle.contentFrame();
+              if (captchaFrame) {
+                await captchaFrame.locator('#checkbox').click({ timeout: 5000 });
+              }
+            } catch (e) {
+              console.warn('Failed to click captcha checkbox during claim:', e.message);
+            }
+          }
+        }).catch(_ => { /* Captcha not found or timed out, proceed normally */ });
         await page.waitForSelector('text=Thank you');
         for (const id of ids) {
           db.data[user][id].status = 'claimed';
